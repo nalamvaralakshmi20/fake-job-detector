@@ -1,8 +1,12 @@
 import re
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
 import html as _html
 from modeling import add_features, train_best_model
+
+DEMO_DATA_PATH = Path(__file__).with_name("demo_jobs.csv")
 
 # Configure page style
 st.set_page_config(
@@ -175,18 +179,35 @@ if "model_assets" not in st.session_state:
 with st.sidebar:
     st.header("Train the detector")
     st.caption(
-        "Upload the labeled CSV used in the Colab notebook. It must include "
-        "a `fraudulent` column with both 0 (genuine) and 1 (fraudulent) labels."
+        "Upload a labeled CSV or train with the included synthetic demo. "
+        "Your CSV needs a `fraudulent` column with both 0 (genuine) and "
+        "1 (fraudulent) labels."
     )
     training_file = st.file_uploader("Labeled job-posting CSV", type=["csv"])
-    train_clicked = st.button(
-        "Train model", type="primary", disabled=training_file is None
+    upload_train_clicked = st.button(
+        "Train with uploaded CSV", type="primary", disabled=training_file is None
     )
-    if train_clicked and training_file is not None:
+    demo_train_clicked = st.button("Train with demo dataset")
+    st.download_button(
+        "Download demo CSV",
+        data=DEMO_DATA_PATH.read_bytes(),
+        file_name=DEMO_DATA_PATH.name,
+        mime="text/csv",
+    )
+    if demo_train_clicked or (upload_train_clicked and training_file is not None):
         try:
-            training_data = pd.read_csv(training_file)
+            training_data = (
+                pd.read_csv(DEMO_DATA_PATH)
+                if demo_train_clicked
+                else pd.read_csv(training_file)
+            )
             with st.spinner("Training and comparing the notebook's 10 model configurations..."):
                 st.session_state.model_assets = train_best_model(training_data)
+            if demo_train_clicked:
+                st.sidebar.warning(
+                    "The demo rows are synthetic and only demonstrate the workflow. "
+                    "Its scores do not measure real-world accuracy."
+                )
         except Exception as error:
             st.session_state.model_assets = None
             st.error(f"Model training failed: {error}")
@@ -194,8 +215,9 @@ with st.sidebar:
 assets = st.session_state.model_assets
 if assets is None:
     st.warning(
-        "Upload the labeled CSV and train the model in the sidebar before "
-        "analyzing a job posting. The model is kept for this app session."
+        "Train with the included demo dataset or upload your own labeled CSV "
+        "in the sidebar before analyzing a job posting. The model is kept "
+        "for this app session."
     )
 else:
     st.sidebar.success(
