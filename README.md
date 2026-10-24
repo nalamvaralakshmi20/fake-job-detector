@@ -4,7 +4,7 @@ Streamlit interface based on the Colab notebook's job-posting features and model
 
 The app compares the notebook's five classifiers with and without chi-square feature selection, selects the best by F1 then ROC-AUC, and refits it on the selected data. Training runs in the current Streamlit session and the model must be retrained after a session reset or app restart.
 
-After training, the app shows Accuracy, Precision, Recall, F1, and ROC-AUC on a held-out part of the chosen dataset, along with the validation sample count. The per-posting model score and text-based warning signs are separate checks, so they can disagree; a low model score is not proof that a posting is legitimate.
+After training, the app shows Accuracy, Precision, Recall, F1, and ROC-AUC on a held-out part of the chosen dataset, along with the validation sample count. Each posting result keeps the model percentage alongside a separate count of rule-based warning signs and missing details. These checks can disagree; a low model score is not proof that a posting is legitimate. If the app updates while open, retrain when prompted to refresh an older cached model.
 
 `demo_jobs.csv` contains fictional, synthetic examples so you can try the training and prediction workflow without supplying a dataset. It is not real job-posting data, and its evaluation scores must not be interpreted as evidence of real-world accuracy. Use a representative, labeled dataset for meaningful evaluation.
 

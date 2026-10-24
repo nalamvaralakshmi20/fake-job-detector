@@ -24,6 +24,7 @@ from sklearn.tree import DecisionTreeClassifier
 
 
 TEXT_COLS = ["title", "company_profile", "description", "requirements", "benefits"]
+MODEL_ASSET_VERSION = 1
 CAT_COLS = [
     "employment_type",
     "required_experience",
@@ -222,6 +223,7 @@ def train_best_model(raw_dataframe):
     steps.append(("classifier", classifier))
 
     return {
+        "asset_version": MODEL_ASSET_VERSION,
         "model": Pipeline(steps),
         **ASSET_FIELDS,
         "metrics": best["metrics"],

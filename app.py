@@ -4,7 +4,7 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 import html as _html
-from modeling import add_features, train_best_model
+from modeling import MODEL_ASSET_VERSION, add_features, train_best_model
 
 DEMO_DATA_PATH = Path(__file__).with_name("demo_jobs.csv")
 
@@ -151,6 +151,12 @@ st.markdown("""
     font-size: 15px;
     color: #7c2d12 !important;
 }
+.fj-signal-summary {
+    margin-top: 12px;
+    color: #374151 !important;
+    font-size: 14px;
+    font-weight: 600;
+}
 .fj-info {
     background: #eff6ff !important;
     border-left: 5px solid #2563eb;
@@ -210,6 +216,16 @@ st.markdown("""
 if "model_assets" not in st.session_state:
     st.session_state.model_assets = None
 
+if "model_assets_outdated" not in st.session_state:
+    st.session_state.model_assets_outdated = False
+
+if (
+    st.session_state.model_assets is not None
+    and st.session_state.model_assets.get("asset_version") != MODEL_ASSET_VERSION
+):
+    st.session_state.model_assets = None
+    st.session_state.model_assets_outdated = True
+
 with st.sidebar:
     st.header("Train the detector")
     st.caption(
@@ -246,9 +262,13 @@ with st.sidebar:
                 st.session_state.model_assets["training_source"] = (
                     "Synthetic demo" if demo_train_clicked else training_file.name
                 )
+                st.session_state.model_assets_outdated = False
         except Exception as error:
             st.session_state.model_assets = None
             st.error(f"Model training failed: {error}")
+
+    if st.session_state.model_assets_outdated:
+        st.info("The app was updated. Train the model again to refresh its scores.")
 
 assets = st.session_state.model_assets
 if assets is None:
@@ -436,6 +456,12 @@ with col2:
         missing_section = (
             f"<h3>Missing information</h3>{missing_html}" if missing_html else ""
         )
+        signal_count = len(warning_signals)
+        missing_count = len(missing_info)
+        signal_summary = (
+            f"{signal_count} warning signal{'s' if signal_count != 1 else ''}"
+            f" · {missing_count} missing detail{'s' if missing_count != 1 else ''}"
+        )
 
         st.markdown(f"""
         <div class="fj-card">
@@ -455,6 +481,7 @@ with col2:
           </div>
           <h3>Possible warning signs</h3>
           <p class="fj-tip">The model score is not a guaranteed real-world probability. These text checks are separate from it; missing information is not proof of fraud.</p>
+          <p class="fj-signal-summary">Independent checks: {_html.escape(signal_summary)}</p>
           {signals_html}
           {missing_section}
         </div>
