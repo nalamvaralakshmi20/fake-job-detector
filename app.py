@@ -22,6 +22,31 @@ st.markdown("""
     background: radial-gradient(ellipse at top left, #dbeafe 0%, transparent 45%),
                 linear-gradient(135deg, #eff6ff 0%, #f5f3ff 50%, #fdf2f8 100%);
 }
+[data-testid="stMain"] {
+    color: #111827;
+}
+[data-testid="stMain"] [data-testid="stWidgetLabel"],
+[data-testid="stMain"] [data-testid="stWidgetLabel"] p,
+[data-testid="stMain"] .stMarkdown,
+[data-testid="stMain"] .stMarkdown p,
+[data-testid="stMain"] .stMarkdown h3 {
+    color: #111827 !important;
+}
+[data-testid="stMain"] input,
+[data-testid="stMain"] textarea,
+[data-testid="stMain"] [data-baseweb="select"] > div {
+    background-color: #ffffff !important;
+    color: #111827 !important;
+    border-color: #94a3b8 !important;
+}
+[data-testid="stMain"] input::placeholder,
+[data-testid="stMain"] textarea::placeholder {
+    color: #64748b !important;
+    opacity: 1;
+}
+[data-testid="stMain"] [data-baseweb="select"] svg {
+    fill: #374151 !important;
+}
 .fj-hero {
     background: linear-gradient(120deg, #1e3a8a, #6d28d9 60%, #db2777);
     color: #ffffff !important;
@@ -194,6 +219,12 @@ with st.sidebar:
         file_name=DEMO_DATA_PATH.name,
         mime="text/csv",
     )
+    st.markdown("#### What the model does")
+    st.caption(
+        "It compares Decision Tree, Naive Bayes, Logistic Regression, "
+        "SVM, and Random Forest models. It chooses the best validation F1 "
+        "score, using ROC-AUC to break ties."
+    )
     if demo_train_clicked or (upload_train_clicked and training_file is not None):
         try:
             training_data = (
@@ -232,8 +263,8 @@ st.markdown(f"""
   <h1>🛡️ Fake Job &amp; Internship Detector</h1>
   <p>Enter a job posting to check for possible scam patterns using Machine Learning.</p>
   <div class="fj-pills">
-    <span>🤖 ML Pipeline Active</span>
-    <span>🔎 Explainable AI Enabled</span>
+    <span>🤖 Trained from labeled examples</span>
+    <span>🚩 Rule-based red flags</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
