@@ -151,6 +151,15 @@ st.markdown("""
     font-size: 15px;
     color: #7c2d12 !important;
 }
+.fj-info {
+    background: #eff6ff !important;
+    border-left: 5px solid #2563eb;
+    padding: 10px 12px;
+    margin: 8px 0;
+    border-radius: 7px;
+    font-size: 15px;
+    color: #1e3a8a !important;
+}
 .fj-ok {
     background: #ecfdf5 !important;
     border-left: 5px solid #059669;
@@ -234,10 +243,8 @@ with st.sidebar:
             )
             with st.spinner("Training and comparing the notebook's 10 model configurations..."):
                 st.session_state.model_assets = train_best_model(training_data)
-            if demo_train_clicked:
-                st.sidebar.warning(
-                    "The demo rows are synthetic and only demonstrate the workflow. "
-                    "Its scores do not measure real-world accuracy."
+                st.session_state.model_assets["training_source"] = (
+                    "Synthetic demo" if demo_train_clicked else training_file.name
                 )
         except Exception as error:
             st.session_state.model_assets = None
@@ -279,19 +286,26 @@ if assets is not None:
         column.metric(metric_name, f"{assets['metrics'][metric_name]:.1%}")
     st.caption(
         f"Selected model: {assets['selected_model']} · "
-        f"trained on {assets['training_rows']:,} labeled postings. "
-        "Scores are measured on a held-out split of that dataset; they do "
-        "not guarantee performance on new postings."
+        f"training rows: {assets['training_rows']:,} · "
+        f"validation rows: {assets['validation_rows']:,} · "
+        f"source: {assets['training_source']}. Scores are measured on "
+        "held-out rows and do not guarantee performance on new postings."
     )
+    if assets["training_rows"] < 1000 or assets["validation_rows"] < 100:
+        st.warning(
+            "This dataset is small, so validation scores can change a lot "
+            "with different postings. The demo is synthetic and is not a "
+            "real-world accuracy test; use a larger, representative labeled dataset."
+        )
 
 with st.expander("How the detector works"):
     st.markdown(
         "The app compares Decision Tree, Naive Bayes, Logistic Regression, "
         "SVM, and Random Forest, each with and without chi-square feature "
         "selection. It selects the configuration with the best validation "
-        "F1 score, using ROC-AUC to break ties. The selected model estimates "
-        "the chance that a posting is labeled fraudulent; separate text "
-        "checks point out possible warning signs."
+        "F1 score, using ROC-AUC to break ties. The model score is based on "
+        "patterns in the training data; separate text checks point out "
+        "possible warning signs and do not change that score."
     )
     st.caption(
         "The included demo data is fictional and is only for trying the app. "
@@ -373,18 +387,19 @@ with col2:
         }
 
         all_text = " ".join(str(v) for v in form.values())
-        flags = []
+        warning_signals = []
+        missing_info = []
 
         if not form["company_profile"].strip():
-            flags.append("No company profile was provided")
+            missing_info.append("Company profile was not provided")
         if not form["has_company_logo"]:
-            flags.append("No company logo was indicated")
+            missing_info.append("Company logo was not indicated")
         if re.search(r"@(gmail|yahoo|outlook|hotmail)\.", all_text, re.I):
-            flags.append("A free email address appears in the posting")
+            warning_signals.append("A free email address appears in the posting")
         if re.search(r"registration fee|deposit|western union|whatsapp|pay ", all_text, re.I):
-            flags.append("The posting mentions payment or messaging apps")
+            warning_signals.append("The posting mentions payment or messaging apps")
         if re.search(r"no experience|urgent|earn \w+ (daily|weekly)|guaranteed", all_text, re.I):
-            flags.append("The posting uses urgent or unusually attractive wording")
+            warning_signals.append("The posting uses urgent or unusually attractive wording")
 
         row_df = add_features(pd.DataFrame([form]))
         probability = float(assets["model"].predict_proba(row_df)[0, 1])
@@ -393,20 +408,34 @@ with col2:
 
         if probability >= 0.5:
             color = "#dc2626"
-            verdict = "⚠️ FAKE / SUSPICIOUS"
-            risk = "High risk"
+            verdict = "⚠️ Elevated model fraud score"
+            risk = "The trained model found a stronger match to fraudulent examples."
         elif probability >= 0.3:
             color = "#d97706"
-            verdict = "🤔 NEEDS CAUTION"
-            risk = "Medium risk"
+            verdict = "🤔 Mixed model signal"
+            risk = "The model result is uncertain; review the posting carefully."
+        elif warning_signals:
+            color = "#d97706"
+            verdict = "🔎 Review before proceeding"
+            risk = "The model score is low, but separate warning signs were found."
         else:
             color = "#059669"
-            verdict = "✅ LIKELY GENUINE"
-            risk = "Low risk"
+            verdict = "✅ No strong fraud signal detected"
+            risk = "A low model score is not proof that this posting is genuine."
 
-        flags_html = "".join(f'<div class="fj-flag">🚩 {_html.escape(f)}</div>' for f in flags)
-        if not flags_html:
-            flags_html = '<div class="fj-ok">✔ No rule-based red flags found</div>'
+        signals_html = "".join(
+            f'<div class="fj-flag">🚩 {_html.escape(signal)}</div>'
+            for signal in warning_signals
+        )
+        if not signals_html:
+            signals_html = '<div class="fj-ok">No rule-based warning signs detected</div>'
+        missing_html = "".join(
+            f'<div class="fj-info">ℹ️ {_html.escape(item)}</div>'
+            for item in missing_info
+        )
+        missing_section = (
+            f"<h3>Missing information</h3>{missing_html}" if missing_html else ""
+        )
 
         st.markdown(f"""
         <div class="fj-card">
@@ -414,18 +443,20 @@ with col2:
             <div class="fj-gauge" style="--p:{percentage};--c:{color}">
               <div class="fj-gauge-inner">
                 <b>{percentage}%</b>
-                <small>fake probability</small>
+                <small>model fraud score</small>
               </div>
             </div>
             <div>
               <span class="fj-badge" style="background:{color}">{verdict}</span>
               <p class="fj-risk-text">
-                {risk}. Verify the company through its official website before sharing documents or paying fees.
+                {_html.escape(risk)} Verify the employer through an independent official source. Never pay to apply.
               </p>
             </div>
           </div>
-          <h3>🚩 Red flags</h3>
-          {flags_html}
+          <h3>Possible warning signs</h3>
+          <p class="fj-tip">The model score is not a guaranteed real-world probability. These text checks are separate from it; missing information is not proof of fraud.</p>
+          {signals_html}
+          {missing_section}
         </div>
         """, unsafe_allow_html=True)
     else:

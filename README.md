@@ -1,8 +1,10 @@
 # Fake Job & Internship Detector
 
-Streamlit interface based on the Colab notebook's job-posting features and model-selection workflow. Train with the included synthetic demo CSV or upload a labeled job-posting CSV (`fraudulent` must contain both `0` and `1`), then enter a posting to get its estimated fraud probability and rule-based red flags.
+Streamlit interface based on the Colab notebook's job-posting features and model-selection workflow. Train with the included synthetic demo CSV or upload a labeled job-posting CSV (`fraudulent` must contain both `0` and `1`), then enter a posting to get the model's fraud score and separate rule-based warning signs.
 
 The app compares the notebook's five classifiers with and without chi-square feature selection, selects the best by F1 then ROC-AUC, and refits it on the selected data. Training runs in the current Streamlit session and the model must be retrained after a session reset or app restart.
+
+After training, the app shows Accuracy, Precision, Recall, F1, and ROC-AUC on a held-out part of the chosen dataset, along with the validation sample count. The per-posting model score and text-based warning signs are separate checks, so they can disagree; a low model score is not proof that a posting is legitimate.
 
 `demo_jobs.csv` contains fictional, synthetic examples so you can try the training and prediction workflow without supplying a dataset. It is not real job-posting data, and its evaluation scores must not be interpreted as evidence of real-world accuracy. Use a representative, labeled dataset for meaningful evaluation.
 

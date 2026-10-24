@@ -228,4 +228,5 @@ def train_best_model(raw_dataframe):
         "selected_model": best["name"],
         "feature_selection": best["feature_selection"],
         "training_rows": len(data),
+        "validation_rows": len(y_test),
     }
