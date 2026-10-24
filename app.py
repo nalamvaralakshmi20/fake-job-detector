@@ -269,6 +269,36 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+if assets is not None:
+    st.markdown("#### Model validation scores")
+    metric_columns = st.columns(5)
+    for column, metric_name in zip(
+        metric_columns,
+        ("Accuracy", "Precision", "Recall", "F1", "ROC-AUC"),
+    ):
+        column.metric(metric_name, f"{assets['metrics'][metric_name]:.1%}")
+    st.caption(
+        f"Selected model: {assets['selected_model']} · "
+        f"trained on {assets['training_rows']:,} labeled postings. "
+        "Scores are measured on a held-out split of that dataset; they do "
+        "not guarantee performance on new postings."
+    )
+
+with st.expander("How the detector works"):
+    st.markdown(
+        "The app compares Decision Tree, Naive Bayes, Logistic Regression, "
+        "SVM, and Random Forest, each with and without chi-square feature "
+        "selection. It selects the configuration with the best validation "
+        "F1 score, using ROC-AUC to break ties. The selected model estimates "
+        "the chance that a posting is labeled fraudulent; separate text "
+        "checks point out possible warning signs."
+    )
+    st.caption(
+        "The included demo data is fictional and is only for trying the app. "
+        "Use representative labeled data to assess real performance. "
+        "A prediction is not proof that a posting is genuine or fraudulent."
+    )
+
 col1, col2 = st.columns([5, 4])
 
 with col1:
@@ -303,11 +333,20 @@ with col1:
 
     c9, c10, c11 = st.columns(3)
     with c9:
-        remote = st.checkbox("🏠 Remote job")
+        remote = st.checkbox(
+            "Remote job",
+            help="Select this if the posting says the work can be done remotely.",
+        )
     with c10:
-        logo = st.checkbox("🏢 Company logo present", value=True)
+        logo = st.checkbox(
+            "Company logo present",
+            help="Select this only if the employer's logo appears on the posting.",
+        )
     with c11:
-        questions = st.checkbox("❓ Screening questions")
+        questions = st.checkbox(
+            "Screening questions",
+            help="Select this if the application includes questions to screen applicants.",
+        )
 
     analyze_clicked = st.button(
         "🔍 Analyze posting", type="primary", disabled=assets is None
@@ -391,17 +430,21 @@ with col2:
         """, unsafe_allow_html=True)
     else:
         st.markdown("""
-        <div class="fj-card" style="text-align:center;padding:40px 20px">
-          <div style="font-size:54px;color:#111827">🕵️</div>
-          <h3 style="color:#111827">Waiting for a posting</h3>
-          <p class="fj-empty">Fill in the form, then press Analyze posting.</p>
+        <div class="fj-card" style="padding:28px">
+          <h3 style="margin-top:0">Your result will appear here</h3>
+          <p>To check a posting:</p>
+          <ol>
+            <li>Train the model from the sidebar using the demo or your labeled CSV.</li>
+            <li>Enter the details you have; the title and description are most useful.</li>
+            <li>Select <strong>Analyze posting</strong> to see the model estimate and warning signs.</li>
+          </ol>
+          <p class="fj-tip">A missing detail is fine—leave it blank rather than guessing.</p>
         </div>
         """, unsafe_allow_html=True)
 
 st.markdown("""
-<div class="fj-foot">
-  <span>🎯 SDG 8: Decent Work &amp; Economic Growth</span>
-  <span>📚 SDG 4: Quality Education</span>
-  <span>⚖️ SDG 16: Strong Institutions</span>
-</div>
+<p class="fj-foot">
+  Educational screening aid only: a model estimate is not proof that a job is
+  genuine or fraudulent. Verify employers independently and never pay to apply.
+</p>
 """, unsafe_allow_html=True)
