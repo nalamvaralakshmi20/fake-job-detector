@@ -24,7 +24,7 @@ from sklearn.tree import DecisionTreeClassifier
 
 
 TEXT_COLS = ["title", "company_profile", "description", "requirements", "benefits"]
-MODEL_ASSET_VERSION = 1
+MODEL_ASSET_VERSION = 2
 CAT_COLS = [
     "employment_type",
     "required_experience",
@@ -77,7 +77,7 @@ def add_features(dataframe):
         data[column] = data[column].replace("", "unknown")
 
     raw_text = data[TEXT_COLS].agg(" ".join, axis=1)
-    data["text"] = raw_text.map(clean_text)
+    data["text"] = raw_text.map(clean_text).replace("", "emptytext")
     data["text_len"] = raw_text.str.len()
     data["caps_ratio"] = raw_text.map(
         lambda value: sum(char.isupper() for char in value) / max(len(value), 1)
@@ -105,7 +105,7 @@ def _make_preprocessor():
                     max_features=5000,
                     stop_words="english",
                     ngram_range=(1, 2),
-                    min_df=2,
+                    min_df=1,
                 ),
                 "text",
             ),
@@ -116,7 +116,7 @@ def _make_preprocessor():
     )
 
 
-def _models():
+def _models(calibration_cv=3):
     return {
         "Decision Tree": DecisionTreeClassifier(
             max_depth=30, class_weight="balanced", random_state=42
@@ -126,7 +126,7 @@ def _models():
             max_iter=1000, class_weight="balanced"
         ),
         "SVM": CalibratedClassifierCV(
-            LinearSVC(class_weight="balanced"), cv=3
+            LinearSVC(class_weight="balanced"), cv=calibration_cv
         ),
         "Random Forest": RandomForestClassifier(
             n_estimators=200,
@@ -138,13 +138,18 @@ def _models():
 
 
 def train_best_model(raw_dataframe):
-    """Train and select a model using the notebook's F1/ROC-AUC workflow."""
+    """Train and evaluate each notebook model configuration."""
     if "fraudulent" not in raw_dataframe.columns:
         raise ValueError("The CSV must include a 'fraudulent' target column.")
 
     data = raw_dataframe.copy()
     data["fraudulent"] = pd.to_numeric(data["fraudulent"], errors="coerce")
     data = data.dropna(subset=["fraudulent"]).copy()
+    if not set(data["fraudulent"].unique()).issubset({0, 1}):
+        raise ValueError(
+            "The 'fraudulent' column may only contain 0 (genuine) or 1 "
+            "(fraudulent) labels."
+        )
     data["fraudulent"] = data["fraudulent"].astype(int)
     if set(data["fraudulent"].unique()) != {0, 1}:
         raise ValueError("The 'fraudulent' column must contain both 0 and 1.")
@@ -158,27 +163,32 @@ def train_best_model(raw_dataframe):
         X, y, test_size=0.2, stratify=y, random_state=42
     )
 
-    candidates = []
-    for feature_selection in (False, True):
-        for name, estimator in _models().items():
-            preprocessor = _make_preprocessor()
-            X_train_prepared = preprocessor.fit_transform(X_train, y_train)
-            selector = None
-            X_train_model = X_train_prepared
-            if feature_selection:
-                selector = SelectKBest(
-                    score_func=chi2, k=min(2000, X_train_prepared.shape[1])
-                )
-                X_train_model = selector.fit_transform(X_train_prepared, y_train)
+    calibration_cv = min(3, int(y_train.value_counts().min()))
+    if calibration_cv < 2:
+        raise ValueError(
+            "The training split needs at least two examples of each class "
+            "to calibrate the SVM. Add more labeled rows and try again."
+        )
 
+    estimators = _models(calibration_cv)
+    candidates = []
+    train_preprocessor = _make_preprocessor()
+    X_train_prepared = train_preprocessor.fit_transform(X_train, y_train)
+    X_test_prepared = train_preprocessor.transform(X_test)
+    for feature_selection in (False, True):
+        selector = None
+        X_train_model = X_train_prepared
+        X_test_model = X_test_prepared
+        if feature_selection:
+            selector = SelectKBest(
+                score_func=chi2, k=min(2000, X_train_prepared.shape[1])
+            )
+            X_train_model = selector.fit_transform(X_train_prepared, y_train)
+            X_test_model = selector.transform(X_test_prepared)
+
+        for name, estimator in estimators.items():
             classifier = clone(estimator)
             classifier.fit(X_train_model, y_train)
-            X_test_prepared = preprocessor.transform(X_test)
-            X_test_model = (
-                selector.transform(X_test_prepared)
-                if selector is not None
-                else X_test_prepared
-            )
             probabilities = classifier.predict_proba(X_test_model)[:, 1]
             predictions = classifier.predict(X_test_model)
             metrics = {
@@ -194,6 +204,11 @@ def train_best_model(raw_dataframe):
                 {
                     "name": name,
                     "feature_selection": feature_selection,
+                    "label": (
+                        f"{name} · "
+                        f"{'with' if feature_selection else 'without'} "
+                        "feature selection"
+                    ),
                     "metrics": metrics,
                 }
             )
@@ -206,28 +221,40 @@ def train_best_model(raw_dataframe):
         ),
     )
 
-    # Refit the selected configuration on all supplied labeled rows.
-    preprocessor = _make_preprocessor()
-    X_prepared = preprocessor.fit_transform(X, y)
-    selector = None
-    if best["feature_selection"]:
-        selector = SelectKBest(
-            score_func=chi2, k=min(2000, X_prepared.shape[1])
+    # Fit a separate production-ready model for every selectable configuration.
+    full_preprocessor = _make_preprocessor()
+    full_prepared = full_preprocessor.fit_transform(X, y)
+    full_selectors = {
+        False: None,
+        True: SelectKBest(
+            score_func=chi2, k=min(2000, full_prepared.shape[1])
+        ).fit(full_prepared, y),
+    }
+    trained_models = {}
+    for candidate in candidates:
+        selector = full_selectors[candidate["feature_selection"]]
+        model_features = (
+            selector.transform(full_prepared)
+            if selector is not None
+            else full_prepared
         )
-        X_prepared = selector.fit_transform(X_prepared, y)
-    classifier = clone(_models()[best["name"]])
-    classifier.fit(X_prepared, y)
-    steps = [("prep", preprocessor)]
-    if selector is not None:
-        steps.append(("feature_selection", selector))
-    steps.append(("classifier", classifier))
+        classifier = clone(estimators[candidate["name"]])
+        classifier.fit(model_features, y)
+        steps = [("prep", full_preprocessor)]
+        if selector is not None:
+            steps.append(("feature_selection", selector))
+        steps.append(("classifier", classifier))
+        trained_models[candidate["label"]] = Pipeline(steps)
 
     return {
         "asset_version": MODEL_ASSET_VERSION,
-        "model": Pipeline(steps),
+        "models": trained_models,
+        "model_scores": {
+            candidate["label"]: candidate["metrics"] for candidate in candidates
+        },
         **ASSET_FIELDS,
         "metrics": best["metrics"],
-        "selected_model": best["name"],
+        "selected_model": best["label"],
         "feature_selection": best["feature_selection"],
         "training_rows": len(data),
         "validation_rows": len(y_test),

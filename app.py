@@ -219,11 +219,21 @@ if "model_assets" not in st.session_state:
 if "model_assets_outdated" not in st.session_state:
     st.session_state.model_assets_outdated = False
 
+if "training_data_raw" not in st.session_state:
+    st.session_state.training_data_raw = None
+
+if "training_data_cleaned" not in st.session_state:
+    st.session_state.training_data_cleaned = None
+
+if "analysis_result" not in st.session_state:
+    st.session_state.analysis_result = None
+
 if (
     st.session_state.model_assets is not None
     and st.session_state.model_assets.get("asset_version") != MODEL_ASSET_VERSION
 ):
     st.session_state.model_assets = None
+    st.session_state.analysis_result = None
     st.session_state.model_assets_outdated = True
 
 with st.sidebar:
@@ -246,9 +256,9 @@ with st.sidebar:
     )
     st.markdown("#### What the model does")
     st.caption(
-        "It compares Decision Tree, Naive Bayes, Logistic Regression, "
-        "SVM, and Random Forest models. It chooses the best validation F1 "
-        "score, using ROC-AUC to break ties."
+        "It trains Decision Tree, Naive Bayes, Logistic Regression, SVM, "
+        "and Random Forest separately. Compare their validation scores and "
+        "choose which one analyzes a posting."
     )
     if demo_train_clicked or (upload_train_clicked and training_file is not None):
         try:
@@ -262,15 +272,21 @@ with st.sidebar:
                 st.session_state.model_assets["training_source"] = (
                     "Synthetic demo" if demo_train_clicked else training_file.name
                 )
+                st.session_state.training_data_raw = training_data.copy()
+                st.session_state.training_data_cleaned = add_features(training_data)
+                st.session_state.analysis_result = None
+                st.session_state.model_choice = st.session_state.model_assets[
+                    "selected_model"
+                ]
                 st.session_state.model_assets_outdated = False
         except Exception as error:
-            st.session_state.model_assets = None
             st.error(f"Model training failed: {error}")
 
     if st.session_state.model_assets_outdated:
         st.info("The app was updated. Train the model again to refresh its scores.")
 
 assets = st.session_state.model_assets
+selected_model = None
 if assets is None:
     st.warning(
         "Train with the included demo dataset or upload your own labeled CSV "
@@ -279,9 +295,8 @@ if assets is None:
     )
 else:
     st.sidebar.success(
-        f"Model ready: {assets['selected_model']} "
-        f"(F1 {assets['metrics']['F1']:.3f}, "
-        f"ROC-AUC {assets['metrics']['ROC-AUC']:.3f})"
+        f"{len(assets['models'])} models ready · "
+        f"best validation F1 {assets['metrics']['F1']:.3f}"
     )
 
 # Hero Section
@@ -297,19 +312,43 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 if assets is not None:
-    st.markdown("#### Model validation scores")
+    model_options = list(assets["models"])
+    if st.session_state.get("model_choice") not in model_options:
+        st.session_state.model_choice = assets["selected_model"]
+    selected_model = st.selectbox(
+        "Model used for analysis",
+        model_options,
+        key="model_choice",
+        help="Each option is a separately trained model with its own validation scores.",
+    )
+    selected_metrics = assets["model_scores"][selected_model]
+    st.markdown("#### Selected model's validation scores")
     metric_columns = st.columns(5)
     for column, metric_name in zip(
         metric_columns,
         ("Accuracy", "Precision", "Recall", "F1", "ROC-AUC"),
     ):
-        column.metric(metric_name, f"{assets['metrics'][metric_name]:.1%}")
+        column.metric(metric_name, f"{selected_metrics[metric_name]:.1%}")
     st.caption(
-        f"Selected model: {assets['selected_model']} · "
+        f"Selected model: {selected_model} · "
         f"training rows: {assets['training_rows']:,} · "
         f"validation rows: {assets['validation_rows']:,} · "
         f"source: {assets['training_source']}. Scores are measured on "
         "held-out rows and do not guarantee performance on new postings."
+    )
+    score_rows = [
+        {"Model configuration": name, **metrics}
+        for name, metrics in assets["model_scores"].items()
+    ]
+    score_table = pd.DataFrame(score_rows).set_index("Model configuration")
+    st.dataframe(
+        score_table.style.format("{:.1%}"),
+        width="stretch",
+    )
+    st.caption(
+        "The selected model is trained on the uploaded data. Validation "
+        "scores are for comparing these configurations, not a guarantee of "
+        "future performance."
     )
     if assets["training_rows"] < 1000 or assets["validation_rows"] < 100:
         st.warning(
@@ -318,14 +357,56 @@ if assets is not None:
             "real-world accuracy test; use a larger, representative labeled dataset."
         )
 
+if st.session_state.training_data_raw is not None:
+    raw_data = st.session_state.training_data_raw
+    cleaned_data = st.session_state.training_data_cleaned
+    st.subheader("Training data loaded for this session")
+    class_counts = pd.to_numeric(
+        raw_data["fraudulent"], errors="coerce"
+    ).value_counts()
+    count_columns = st.columns(3)
+    count_columns[0].metric("Rows loaded", f"{len(raw_data):,}")
+    count_columns[1].metric("Genuine labels (0)", f"{int(class_counts.get(0, 0)):,}")
+    count_columns[2].metric(
+        "Fraudulent labels (1)", f"{int(class_counts.get(1, 0)):,}"
+    )
+    raw_tab, cleaned_tab = st.tabs(["Raw uploaded CSV", "Cleaned + engineered data"])
+    with raw_tab:
+        st.caption(
+            "Original CSV values, as loaded. This data is held in this browser "
+            "session and is not shared with other app sessions."
+        )
+        st.dataframe(raw_data, width="stretch", height=320)
+        st.download_button(
+            "Download raw data",
+            data=raw_data.to_csv(index=False).encode("utf-8"),
+            file_name="training_data_raw.csv",
+            mime="text/csv",
+            key="download_raw_training_data",
+        )
+    with cleaned_tab:
+        st.caption(
+            "Model-ready preview: normalized text, missing-value handling, "
+            "and derived features. The original columns are retained too."
+        )
+        st.dataframe(cleaned_data, width="stretch", height=320)
+        st.download_button(
+            "Download cleaned + engineered data",
+            data=cleaned_data.to_csv(index=False).encode("utf-8"),
+            file_name="training_data_cleaned.csv",
+            mime="text/csv",
+            key="download_cleaned_training_data",
+        )
+
 with st.expander("How the detector works"):
     st.markdown(
         "The app compares Decision Tree, Naive Bayes, Logistic Regression, "
         "SVM, and Random Forest, each with and without chi-square feature "
-        "selection. It selects the configuration with the best validation "
-        "F1 score, using ROC-AUC to break ties. The model score is based on "
-        "patterns in the training data; separate text checks point out "
-        "possible warning signs and do not change that score."
+        "selection. It starts with the configuration that has the highest "
+        "validation F1 score (using ROC-AUC to break ties), but you can "
+        "select any trained configuration. The model score is based on "
+        "training-data patterns; separate text checks point out possible "
+        "warning signs and do not change the model score."
     )
     st.caption(
         "The included demo data is fictional and is only for trying the app. "
@@ -382,30 +463,38 @@ with col1:
             help="Select this if the application includes questions to screen applicants.",
         )
 
+    form = {
+        "title": title or "",
+        "location": location or "",
+        "salary_range": salary or "",
+        "industry": industry or "",
+        "function": function or "",
+        "employment_type": employment_type or "",
+        "required_experience": experience or "",
+        "required_education": education or "",
+        "company_profile": profile or "",
+        "description": description or "",
+        "requirements": requirements or "",
+        "benefits": benefits or "",
+        "telecommuting": int(bool(remote)),
+        "has_company_logo": int(bool(logo)),
+        "has_questions": int(bool(questions)),
+    }
     analyze_clicked = st.button(
         "🔍 Analyze posting", type="primary", disabled=assets is None
     )
 
 with col2:
-    if analyze_clicked:
-        form = {
-            "title": title or "",
-            "location": location or "",
-            "salary_range": salary or "",
-            "industry": industry or "",
-            "function": function or "",
-            "employment_type": employment_type or "",
-            "required_experience": experience or "",
-            "required_education": education or "",
-            "company_profile": profile or "",
-            "description": description or "",
-            "requirements": requirements or "",
-            "benefits": benefits or "",
-            "telecommuting": int(bool(remote)),
-            "has_company_logo": int(bool(logo)),
-            "has_questions": int(bool(questions)),
-        }
-
+    if analyze_clicked and not any(
+        str(form[field]).strip()
+        for field in ("title", "description", "requirements", "company_profile")
+    ):
+        st.session_state.analysis_result = None
+        st.error(
+            "Enter a job title, description, requirements, or company profile "
+            "before analyzing. An empty form cannot produce a useful score."
+        )
+    elif analyze_clicked:
         all_text = " ".join(str(v) for v in form.values())
         warning_signals = []
         missing_info = []
@@ -422,9 +511,9 @@ with col2:
             warning_signals.append("The posting uses urgent or unusually attractive wording")
 
         row_df = add_features(pd.DataFrame([form]))
-        probability = float(assets["model"].predict_proba(row_df)[0, 1])
-
-        percentage = round(probability * 100, 1)
+        probability = float(
+            assets["models"][selected_model].predict_proba(row_df)[0, 1]
+        )
 
         if probability >= 0.5:
             color = "#dc2626"
@@ -443,40 +532,59 @@ with col2:
             verdict = "✅ No strong fraud signal detected"
             risk = "A low model score is not proof that this posting is genuine."
 
+        st.session_state.analysis_result = {
+            "form": form.copy(),
+            "model": selected_model,
+            "probability": probability,
+            "warning_signals": warning_signals,
+            "missing_info": missing_info,
+            "verdict": verdict,
+            "risk": risk,
+            "color": color,
+        }
+
+    result = st.session_state.analysis_result
+    if result is not None and assets is not None:
+        if result["form"] != form or result["model"] != selected_model:
+            st.info(
+                "The form or selected model changed since this result was "
+                "calculated. Select **Analyze posting** to refresh it."
+            )
+        percentage = round(result["probability"] * 100, 1)
         signals_html = "".join(
             f'<div class="fj-flag">🚩 {_html.escape(signal)}</div>'
-            for signal in warning_signals
+            for signal in result["warning_signals"]
         )
         if not signals_html:
             signals_html = '<div class="fj-ok">No rule-based warning signs detected</div>'
         missing_html = "".join(
             f'<div class="fj-info">ℹ️ {_html.escape(item)}</div>'
-            for item in missing_info
+            for item in result["missing_info"]
         )
         missing_section = (
             f"<h3>Missing information</h3>{missing_html}" if missing_html else ""
         )
-        signal_count = len(warning_signals)
-        missing_count = len(missing_info)
+        signal_count = len(result["warning_signals"])
+        missing_count = len(result["missing_info"])
         signal_summary = (
             f"{signal_count} warning signal{'s' if signal_count != 1 else ''}"
             f" · {missing_count} missing detail{'s' if missing_count != 1 else ''}"
         )
-
         st.markdown(f"""
         <div class="fj-card">
           <div class="fj-top">
-            <div class="fj-gauge" style="--p:{percentage};--c:{color}">
+            <div class="fj-gauge" style="--p:{percentage};--c:{result['color']}">
               <div class="fj-gauge-inner">
                 <b>{percentage}%</b>
                 <small>model fraud score</small>
               </div>
             </div>
             <div>
-              <span class="fj-badge" style="background:{color}">{verdict}</span>
+              <span class="fj-badge" style="background:{result['color']}">{_html.escape(result['verdict'])}</span>
               <p class="fj-risk-text">
-                {_html.escape(risk)} Verify the employer through an independent official source. Never pay to apply.
+                {_html.escape(result['risk'])} Verify the employer through an independent official source. Never pay to apply.
               </p>
+              <p class="fj-tip">Analyzed with {_html.escape(result['model'])}</p>
             </div>
           </div>
           <h3>Possible warning signs</h3>

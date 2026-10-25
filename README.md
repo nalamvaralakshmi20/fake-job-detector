@@ -1,10 +1,12 @@
 # Fake Job & Internship Detector
 
-Streamlit interface based on the Colab notebook's job-posting features and model-selection workflow. Train with the included synthetic demo CSV or upload a labeled job-posting CSV (`fraudulent` must contain both `0` and `1`), then enter a posting to get the model's fraud score and separate rule-based warning signs.
+Streamlit interface based on the Colab notebook's job-posting features and model-selection workflow. Train with the included synthetic demo CSV or upload a labeled job-posting CSV (`fraudulent` must contain both `0` and `1`), inspect the original and model-ready data, choose a trained model, then enter a posting to get its score and separate rule-based warning signs.
 
-The app compares the notebook's five classifiers with and without chi-square feature selection, selects the best by F1 then ROC-AUC, and refits it on the selected data. Training runs in the current Streamlit session and the model must be retrained after a session reset or app restart.
+The app separately trains and evaluates five classifiers—with and without chi-square feature selection—and displays each configuration's Accuracy, Precision, Recall, F1, and ROC-AUC. The best validation F1 (ROC-AUC breaks ties) is selected initially, but you can choose any trained configuration for analysis. Each result remains visible when Streamlit reruns and is labeled with the model that produced it.
 
-After training, the app shows Accuracy, Precision, Recall, F1, and ROC-AUC on a held-out part of the chosen dataset, along with the validation sample count. Each posting result keeps the model percentage alongside a separate count of rule-based warning signs and missing details. These checks can disagree; a low model score is not proof that a posting is legitimate. If the app updates while open, retrain when prompted to refresh an older cached model.
+After training, the app shows the uploaded raw CSV and cleaned/engineered feature data, with download buttons for both. Training data, model, and analysis result are held in the current Streamlit browser session, are not shared with other app sessions, and must be retrained after a session reset or app restart.
+
+Each posting result keeps the selected model's percentage alongside a separate count of rule-based warning signs and missing details. These checks can disagree; a low model score is not proof that a posting is legitimate. If the app updates while open, retrain when prompted to refresh an older cached model.
 
 `demo_jobs.csv` contains fictional, synthetic examples so you can try the training and prediction workflow without supplying a dataset. It is not real job-posting data, and its evaluation scores must not be interpreted as evidence of real-world accuracy. Use a representative, labeled dataset for meaningful evaluation.
 
@@ -22,6 +24,6 @@ streamlit run app.py
 1. Push this repository to GitHub.
 2. In Streamlit Community Cloud, create an app from this repository and select `main`.
 3. Set the main file path to `app.py`, then deploy.
-4. Click **Train with demo dataset** to try the app, or upload a representative labeled CSV in the sidebar for meaningful model training.
+4. Click **Train with demo dataset** to try the app, or upload a representative labeled CSV in the sidebar for meaningful model training. After training, compare the model scores and select a model before analyzing postings.
 
 The model exists only in the active app session. It must be trained again after a session reset or app restart.
