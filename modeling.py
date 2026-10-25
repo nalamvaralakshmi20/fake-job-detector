@@ -151,6 +151,35 @@ def _models(calibration_cv=3):
     }
 
 
+def calculate_metrics(y_true, predictions, probabilities):
+    """Return binary classification metrics for already-computed predictions."""
+    has_both_classes = len(set(y_true)) == 2
+    matrix = confusion_matrix(y_true, predictions, labels=[0, 1])
+    tn, fp, fn, tp = matrix.ravel()
+    return {
+        "Accuracy": accuracy_score(y_true, predictions),
+        "Balanced accuracy": (
+            balanced_accuracy_score(y_true, predictions)
+            if has_both_classes
+            else None
+        ),
+        "Precision": precision_score(y_true, predictions, zero_division=0),
+        "Recall": recall_score(y_true, predictions, zero_division=0),
+        "F1": f1_score(y_true, predictions, zero_division=0),
+        "ROC-AUC": (
+            roc_auc_score(y_true, probabilities)
+            if has_both_classes
+            else None
+        ),
+        "Specificity": tn / (tn + fp) if tn + fp else None,
+    }, {
+        "True negative": int(tn),
+        "False positive": int(fp),
+        "False negative": int(fn),
+        "True positive": int(tp),
+    }
+
+
 def train_best_model(raw_dataframe):
     """Train and evaluate each notebook model configuration."""
     if "fraudulent" not in raw_dataframe.columns:
@@ -233,17 +262,9 @@ def train_best_model(raw_dataframe):
     for candidate in candidates:
         probabilities = candidate.pop("probabilities")
         predictions = candidate.pop("predictions")
-        matrix = confusion_matrix(y, predictions, labels=[0, 1])
-        tn, fp, fn, tp = matrix.ravel()
-        candidate["metrics"] = {
-            "Accuracy": accuracy_score(y, predictions),
-            "Balanced accuracy": balanced_accuracy_score(y, predictions),
-            "Precision": precision_score(y, predictions, zero_division=0),
-            "Recall": recall_score(y, predictions, zero_division=0),
-            "F1": f1_score(y, predictions, zero_division=0),
-            "ROC-AUC": roc_auc_score(y, probabilities),
-            "Specificity": tn / max(tn + fp, 1),
-        }
+        candidate["metrics"], candidate["confusion_counts"] = calculate_metrics(
+            y, predictions, probabilities
+        )
         candidate["validation_predictions"] = [
             {
                 "row_number": int(source_row_number),
@@ -255,12 +276,6 @@ def train_best_model(raw_dataframe):
                 data["_source_row_number"], y, predictions, probabilities
             )
         ]
-        candidate["confusion_counts"] = {
-            "True negative": int(tn),
-            "False positive": int(fp),
-            "False negative": int(fn),
-            "True positive": int(tp),
-        }
 
     best = max(
         candidates,

@@ -4,7 +4,12 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 import html as _html
-from modeling import MODEL_ASSET_VERSION, add_features, train_best_model
+from modeling import (
+    MODEL_ASSET_VERSION,
+    add_features,
+    calculate_metrics,
+    train_best_model,
+)
 
 DEMO_DATA_PATH = Path(__file__).with_name("demo_jobs.csv")
 BINARY_FORM_FIELDS = {"telecommuting", "has_company_logo", "has_questions"}
@@ -265,6 +270,9 @@ if "analysis_result" not in st.session_state:
 if "csv_analysis_result" not in st.session_state:
     st.session_state.csv_analysis_result = None
 
+if "selected_csv_rows" not in st.session_state:
+    st.session_state.selected_csv_rows = []
+
 assets = st.session_state.model_assets
 if assets is not None and (
     not isinstance(assets, dict)
@@ -274,6 +282,7 @@ if assets is not None and (
     st.session_state.model_assets = None
     st.session_state.analysis_result = None
     st.session_state.csv_analysis_result = None
+    st.session_state.selected_csv_rows = []
     st.session_state.model_assets_outdated = True
 
 with st.sidebar:
@@ -469,11 +478,13 @@ if st.session_state.training_data_raw is not None:
         )
 
 if assets is not None and st.session_state.training_data_raw is not None:
-    st.subheader("Explore any CSV posting")
+    st.subheader("Select CSV postings to analyze")
     st.caption(
-        "A row is one job posting; its columns are the posting fields. "
-        "Choose any row below to view its out-of-fold model score and label, "
-        "or load its fields into the manual analysis form."
+        "Each CSV row is one posting. The table's leftmost index starts at 0, "
+        "so its first posting appears here as “Data row 0 / CSV line 2” "
+        "(line 1 is the header). Choose one or more labeled rows. "
+        "Scores use out-of-fold predictions, not the final model fitted on "
+        "those same rows."
     )
     validation_rows = assets["validation_predictions"][selected_model]
     raw_data = st.session_state.training_data_raw
@@ -483,29 +494,50 @@ if assets is not None and st.session_state.training_data_raw is not None:
         raw_row = raw_data.iloc[source_row]
         title_value = str(raw_row.get("title", "")).strip() or "Untitled posting"
         row_labels[
-            f"CSV row {prediction['row_number']} · {title_value[:90]}"
+            f"Data row {source_row} / CSV line {prediction['row_number']} · "
+            f"{title_value[:90]}"
         ] = prediction
 
     if row_labels:
-        selected_row_label = st.selectbox(
-            "CSV posting",
+        selected_row_labels = st.multiselect(
+            "CSV postings to analyze",
             list(row_labels),
-            key="validation_row_choice",
+            key="selected_csv_rows",
+            placeholder=(
+                "Select Data row 0 / CSV line 2 · "
+                "Remote data entry assistant"
+            ),
         )
         action_columns = st.columns(2)
-        score_row_clicked = action_columns[0].button("Show out-of-fold score")
-        load_row_clicked = action_columns[1].button(
-            "Load fields into manual form"
+        evaluate_rows_clicked = action_columns[0].button(
+            "Analyze selected CSV rows",
+            disabled=not selected_row_labels,
         )
-        if score_row_clicked:
-            selected_prediction = row_labels[selected_row_label]
+        load_row_clicked = action_columns[1].button(
+            "Load one selected row into manual form",
+            disabled=len(selected_row_labels) != 1,
+        )
+        if evaluate_rows_clicked:
+            selected_predictions = [
+                row_labels[label] for label in selected_row_labels
+            ]
+            y_true = [item["actual_label"] for item in selected_predictions]
+            y_pred = [item["predicted_label"] for item in selected_predictions]
+            y_probability = [
+                item["fraud_probability"] for item in selected_predictions
+            ]
+            row_metrics, row_confusion = calculate_metrics(
+                y_true, y_pred, y_probability
+            )
             st.session_state.csv_analysis_result = {
-                "row_label": selected_row_label,
+                "row_labels": selected_row_labels.copy(),
                 "model": selected_model,
-                **selected_prediction,
+                "predictions": selected_predictions,
+                "metrics": row_metrics,
+                "confusion_counts": row_confusion,
             }
-        if load_row_clicked:
-            selected_prediction = row_labels[selected_row_label]
+        if load_row_clicked and len(selected_row_labels) == 1:
+            selected_prediction = row_labels[selected_row_labels[0]]
             raw_row = raw_data.iloc[selected_prediction["row_number"] - 2]
             clean_row = add_features(pd.DataFrame([raw_row])).iloc[0]
             field_keys = {
@@ -542,39 +574,106 @@ if assets is not None and st.session_state.training_data_raw is not None:
         csv_result = st.session_state.csv_analysis_result
         if csv_result is not None:
             if (
-                csv_result["row_label"] != selected_row_label
+                csv_result["row_labels"] != selected_row_labels
                 or csv_result["model"] != selected_model
             ):
                 st.info(
-                    "The selected row or model changed. Select **Score selected "
-                    "CSV row** to refresh this result."
+                    "The selected rows or model changed. Select **Analyze "
+                    "selected CSV rows** to refresh the results."
                 )
             else:
-                probability = csv_result["fraud_probability"]
-                predicted = csv_result["predicted_label"]
-                actual = csv_result["actual_label"]
-                result_columns = st.columns(4)
-                result_columns[0].metric("Fraud risk score", f"{probability:.1%}")
-                result_columns[1].metric(
-                    "Model prediction", "Fraudulent" if predicted else "Genuine"
-                )
-                result_columns[2].metric(
-                    "Known CSV label", "Fraudulent" if actual else "Genuine"
-                )
-                result_columns[3].metric(
-                    "Held-out check", "Correct" if predicted == actual else "Mismatch"
-                )
-                st.caption(
-                    f"Model certainty (not calibrated): "
-                    f"{max(probability, 1 - probability):.1%} · "
-                    f"Selected model: {selected_model} · CSV row "
-                    f"{csv_result['row_number']}"
-                )
-                with st.expander("View this held-out posting's original CSV fields"):
+                if len(csv_result["predictions"]) == 1:
+                    prediction = csv_result["predictions"][0]
+                    probability = prediction["fraud_probability"]
+                    predicted = prediction["predicted_label"]
+                    actual = prediction["actual_label"]
+                    result_columns = st.columns(4)
+                    result_columns[0].metric("Fraud risk score", f"{probability:.1%}")
+                    result_columns[1].metric(
+                        "Model prediction",
+                        "Fraudulent" if predicted else "Genuine",
+                    )
+                    result_columns[2].metric(
+                        "Known CSV label",
+                        "Fraudulent" if actual else "Genuine",
+                    )
+                    result_columns[3].metric(
+                        "Row check",
+                        "Correct" if predicted == actual else "Mismatch",
+                    )
+                    st.caption(
+                        f"Model certainty (not calibrated): "
+                        f"{max(probability, 1 - probability):.1%} · "
+                        f"Selected model: {selected_model} · CSV row "
+                        f"{prediction['row_number']}"
+                    )
+                    with st.expander("View this posting's original CSV fields"):
+                        st.dataframe(
+                            raw_data.iloc[[prediction["row_number"] - 2]],
+                            width="stretch",
+                        )
+                else:
+                    st.markdown(
+                        f"#### Metrics for {len(csv_result['predictions'])} selected rows"
+                    )
+                    result_columns = st.columns(7)
+                    for column, metric_name in zip(
+                        result_columns,
+                        (
+                            "Accuracy",
+                            "Balanced accuracy",
+                            "Precision",
+                            "Recall",
+                            "F1",
+                            "ROC-AUC",
+                            "Specificity",
+                        ),
+                    ):
+                        value = csv_result["metrics"][metric_name]
+                        column.metric(
+                            metric_name,
+                            "N/A" if value is None else f"{value:.1%}",
+                        )
+                    st.caption(
+                        "These metrics apply only to your selected rows; small "
+                        "selection counts are unstable and are not a dataset-wide "
+                        "performance estimate."
+                    )
                     st.dataframe(
-                        raw_data.iloc[[csv_result["row_number"] - 2]],
+                        pd.DataFrame(
+                            [
+                                {
+                                    "CSV row": prediction["row_number"],
+                                    "Title": str(
+                                        raw_data.iloc[
+                                            prediction["row_number"] - 2
+                                        ].get("title", "")
+                                    ),
+                                    "Fraud score": prediction[
+                                        "fraud_probability"
+                                    ],
+                                    "Prediction": (
+                                        "Fraudulent"
+                                        if prediction["predicted_label"]
+                                        else "Genuine"
+                                    ),
+                                    "Known label": (
+                                        "Fraudulent"
+                                        if prediction["actual_label"]
+                                        else "Genuine"
+                                    ),
+                                    "Correct": (
+                                        prediction["predicted_label"]
+                                        == prediction["actual_label"]
+                                    ),
+                                }
+                                for prediction in csv_result["predictions"]
+                            ]
+                        ).style.format({"Fraud score": "{:.1%}"}),
                         width="stretch",
                     )
+                    with st.expander("Confusion counts for selected rows"):
+                        st.json(csv_result["confusion_counts"])
     else:
         st.info("No valid labeled CSV rows are available for out-of-fold scoring.")
 
