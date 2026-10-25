@@ -8,6 +8,18 @@ from modeling import MODEL_ASSET_VERSION, add_features, train_best_model
 
 DEMO_DATA_PATH = Path(__file__).with_name("demo_jobs.csv")
 BINARY_FORM_FIELDS = {"telecommuting", "has_company_logo", "has_questions"}
+REQUIRED_MODEL_ASSET_FIELDS = {
+    "asset_version",
+    "models",
+    "model_scores",
+    "validation_predictions",
+    "confusion_counts",
+    "metrics",
+    "selected_model",
+    "training_rows",
+    "validation_rows",
+    "validation_folds",
+}
 
 # Configure page style
 st.set_page_config(
@@ -253,9 +265,11 @@ if "analysis_result" not in st.session_state:
 if "csv_analysis_result" not in st.session_state:
     st.session_state.csv_analysis_result = None
 
-if (
-    st.session_state.model_assets is not None
-    and st.session_state.model_assets.get("asset_version") != MODEL_ASSET_VERSION
+assets = st.session_state.model_assets
+if assets is not None and (
+    not isinstance(assets, dict)
+    or not REQUIRED_MODEL_ASSET_FIELDS.issubset(assets)
+    or assets.get("asset_version") != MODEL_ASSET_VERSION
 ):
     st.session_state.model_assets = None
     st.session_state.analysis_result = None
@@ -293,7 +307,7 @@ with st.sidebar:
                 if demo_train_clicked
                 else pd.read_csv(training_file)
             )
-            with             st.spinner(
+            with st.spinner(
                 "Comparing 10 model configurations with stratified "
                 "cross-validation, then fitting them on all labeled rows..."
             ):

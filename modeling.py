@@ -26,7 +26,7 @@ from sklearn.tree import DecisionTreeClassifier
 
 
 TEXT_COLS = ["title", "company_profile", "description", "requirements", "benefits"]
-MODEL_ASSET_VERSION = 4
+MODEL_ASSET_VERSION = 5
 CAT_COLS = [
     "location",
     "salary_range",
