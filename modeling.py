@@ -10,6 +10,8 @@ from sklearn.feature_selection import SelectKBest, chi2
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
+    balanced_accuracy_score,
+    confusion_matrix,
     f1_score,
     precision_score,
     recall_score,
@@ -24,8 +26,10 @@ from sklearn.tree import DecisionTreeClassifier
 
 
 TEXT_COLS = ["title", "company_profile", "description", "requirements", "benefits"]
-MODEL_ASSET_VERSION = 2
+MODEL_ASSET_VERSION = 3
 CAT_COLS = [
+    "location",
+    "salary_range",
     "employment_type",
     "required_experience",
     "required_education",
@@ -41,7 +45,7 @@ NUM_COLS = BINARY_COLS + [
     "n_links",
     "n_exclaim",
 ]
-ALL_INPUTS = TEXT_COLS + CAT_COLS + ["location", "salary_range"] + BINARY_COLS
+ALL_INPUTS = TEXT_COLS + CAT_COLS + BINARY_COLS
 ASSET_FIELDS = {
     "TEXT_COLS": TEXT_COLS,
     "CAT_COLS": CAT_COLS,
@@ -65,19 +69,29 @@ def add_features(dataframe):
         if column not in data.columns:
             data[column] = 0 if column in BINARY_COLS else ""
 
-    for column in TEXT_COLS + CAT_COLS + ["location", "salary_range"]:
+    for column in TEXT_COLS + CAT_COLS:
         data[column] = data[column].fillna("").astype(str)
 
-    for column in BINARY_COLS:
-        data[column] = (
-            pd.to_numeric(data[column], errors="coerce").fillna(0).astype(int)
-        )
-
-    for column in CAT_COLS:
-        data[column] = data[column].replace("", "unknown")
-
     raw_text = data[TEXT_COLS].agg(" ".join, axis=1)
-    data["text"] = raw_text.map(clean_text).replace("", "emptytext")
+    for column in TEXT_COLS:
+        data[column] = data[column].map(clean_text)
+    for column in CAT_COLS:
+        data[column] = data[column].str.strip().str.lower().replace("", "unknown")
+
+    for column in BINARY_COLS:
+        source = data[column]
+        normalized = source.astype(str).str.strip().str.lower()
+        mapped = normalized.map(
+            {"1": 1, "true": 1, "yes": 1, "y": 1, "0": 0, "false": 0, "no": 0, "n": 0}
+        )
+        numeric = pd.to_numeric(source, errors="coerce")
+        data[column] = mapped.where(
+            mapped.notna(), numeric.where(numeric.isin([0, 1]), 0)
+        ).fillna(0).astype(int)
+
+    data["text"] = (
+        data[TEXT_COLS].agg(" ".join, axis=1).str.strip().replace("", "emptytext")
+    )
     data["text_len"] = raw_text.str.len()
     data["caps_ratio"] = raw_text.map(
         lambda value: sum(char.isupper() for char in value) / max(len(value), 1)
@@ -191,14 +205,18 @@ def train_best_model(raw_dataframe):
             classifier.fit(X_train_model, y_train)
             probabilities = classifier.predict_proba(X_test_model)[:, 1]
             predictions = classifier.predict(X_test_model)
+            matrix = confusion_matrix(y_test, predictions, labels=[0, 1])
+            tn, fp, fn, tp = matrix.ravel()
             metrics = {
                 "Accuracy": accuracy_score(y_test, predictions),
+                "Balanced accuracy": balanced_accuracy_score(y_test, predictions),
                 "Precision": precision_score(
                     y_test, predictions, zero_division=0
                 ),
                 "Recall": recall_score(y_test, predictions, zero_division=0),
                 "F1": f1_score(y_test, predictions, zero_division=0),
                 "ROC-AUC": roc_auc_score(y_test, probabilities),
+                "Specificity": tn / max(tn + fp, 1),
             }
             candidates.append(
                 {
@@ -210,6 +228,26 @@ def train_best_model(raw_dataframe):
                         "feature selection"
                     ),
                     "metrics": metrics,
+                    "validation_predictions": [
+                        {
+                            "row_number": int(index) + 2,
+                            "actual_label": int(actual),
+                            "predicted_label": int(predicted),
+                            "fraud_probability": float(probability),
+                        }
+                        for index, actual, predicted, probability in zip(
+                            y_test.index,
+                            y_test,
+                            predictions,
+                            probabilities,
+                        )
+                    ],
+                    "confusion_counts": {
+                        "True negative": int(tn),
+                        "False positive": int(fp),
+                        "False negative": int(fn),
+                        "True positive": int(tp),
+                    },
                 }
             )
 
@@ -251,6 +289,14 @@ def train_best_model(raw_dataframe):
         "models": trained_models,
         "model_scores": {
             candidate["label"]: candidate["metrics"] for candidate in candidates
+        },
+        "validation_predictions": {
+            candidate["label"]: candidate["validation_predictions"]
+            for candidate in candidates
+        },
+        "confusion_counts": {
+            candidate["label"]: candidate["confusion_counts"]
+            for candidate in candidates
         },
         **ASSET_FIELDS,
         "metrics": best["metrics"],

@@ -32,6 +32,27 @@ st.markdown("""
 [data-testid="stMain"] .stMarkdown h3 {
     color: #111827 !important;
 }
+[data-testid="stMetric"] {
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1;
+    border-radius: 12px;
+    padding: 12px 14px;
+}
+[data-testid="stMetricLabel"],
+[data-testid="stMetricLabel"] p,
+[data-testid="stMetricValue"],
+[data-testid="stMetricValue"] div,
+[data-testid="stMetricDelta"] {
+    color: #111827 !important;
+}
+[data-testid="stAlert"] {
+    background: #fff7cc !important;
+    border: 1px solid #eab308 !important;
+}
+[data-testid="stAlert"] [data-testid="stMarkdownContainer"],
+[data-testid="stAlert"] [data-testid="stMarkdownContainer"] p {
+    color: #422006 !important;
+}
 [data-testid="stMain"] input,
 [data-testid="stMain"] textarea,
 [data-testid="stMain"] [data-baseweb="select"] > div {
@@ -228,12 +249,16 @@ if "training_data_cleaned" not in st.session_state:
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
 
+if "csv_analysis_result" not in st.session_state:
+    st.session_state.csv_analysis_result = None
+
 if (
     st.session_state.model_assets is not None
     and st.session_state.model_assets.get("asset_version") != MODEL_ASSET_VERSION
 ):
     st.session_state.model_assets = None
     st.session_state.analysis_result = None
+    st.session_state.csv_analysis_result = None
     st.session_state.model_assets_outdated = True
 
 with st.sidebar:
@@ -273,8 +298,19 @@ with st.sidebar:
                     "Synthetic demo" if demo_train_clicked else training_file.name
                 )
                 st.session_state.training_data_raw = training_data.copy()
-                st.session_state.training_data_cleaned = add_features(training_data)
+                cleaned_training_data = add_features(training_data)
+                cleaned_training_data["fraudulent"] = pd.to_numeric(
+                    cleaned_training_data["fraudulent"], errors="coerce"
+                )
+                cleaned_training_data = cleaned_training_data.dropna(
+                    subset=["fraudulent"]
+                )
+                cleaned_training_data["fraudulent"] = (
+                    cleaned_training_data["fraudulent"].astype(int)
+                )
+                st.session_state.training_data_cleaned = cleaned_training_data
                 st.session_state.analysis_result = None
+                st.session_state.csv_analysis_result = None
                 st.session_state.model_choice = st.session_state.model_assets[
                     "selected_model"
                 ]
@@ -350,6 +386,16 @@ if assets is not None:
         "scores are for comparing these configurations, not a guarantee of "
         "future performance."
     )
+    with st.expander("More validation detail: balanced accuracy, specificity, confusion counts"):
+        selected_confusion = assets["confusion_counts"][selected_model]
+        confusion_columns = st.columns(4)
+        for column, label in zip(confusion_columns, selected_confusion):
+            column.metric(label, selected_confusion[label])
+        st.caption(
+            "Specificity measures how often genuine postings are correctly "
+            "identified. False positives are genuine jobs flagged as fake; "
+            "false negatives are fake jobs missed by the model."
+        )
     if assets["training_rows"] < 1000 or assets["validation_rows"] < 100:
         st.warning(
             "This dataset is small, so validation scores can change a lot "
@@ -386,8 +432,10 @@ if st.session_state.training_data_raw is not None:
         )
     with cleaned_tab:
         st.caption(
-            "Model-ready preview: normalized text, missing-value handling, "
-            "and derived features. The original columns are retained too."
+            "ETL output used by the models: text normalized to lowercase, "
+            "URLs/emails tokenized, missing categories marked unknown, "
+            "boolean flags normalized, and numeric/text features derived. "
+            "Original values remain available in the raw tab."
         )
         st.dataframe(cleaned_data, width="stretch", height=320)
         st.download_button(
@@ -397,6 +445,77 @@ if st.session_state.training_data_raw is not None:
             mime="text/csv",
             key="download_cleaned_training_data",
         )
+
+if assets is not None and st.session_state.training_data_raw is not None:
+    st.subheader("Score one held-out CSV posting")
+    st.caption(
+        "Choose a row the model did not train on. Its known label is shown "
+        "beside the selected model's prediction so you can inspect a real "
+        "held-out example without scoring a row the model memorized."
+    )
+    validation_rows = assets["validation_predictions"][selected_model]
+    raw_data = st.session_state.training_data_raw
+    row_labels = {}
+    for prediction in validation_rows:
+        source_row = prediction["row_number"] - 2
+        raw_row = raw_data.iloc[source_row]
+        title_value = str(raw_row.get("title", "")).strip() or "Untitled posting"
+        row_labels[
+            f"CSV row {prediction['row_number']} · {title_value[:90]}"
+        ] = prediction
+
+    if row_labels:
+        selected_row_label = st.selectbox(
+            "Held-out posting",
+            list(row_labels),
+            key="validation_row_choice",
+        )
+        score_row_clicked = st.button("Score selected CSV row")
+        if score_row_clicked:
+            selected_prediction = row_labels[selected_row_label]
+            st.session_state.csv_analysis_result = {
+                "row_label": selected_row_label,
+                "model": selected_model,
+                **selected_prediction,
+            }
+
+        csv_result = st.session_state.csv_analysis_result
+        if csv_result is not None:
+            if (
+                csv_result["row_label"] != selected_row_label
+                or csv_result["model"] != selected_model
+            ):
+                st.info(
+                    "The selected row or model changed. Select **Score selected "
+                    "CSV row** to refresh this result."
+                )
+            else:
+                probability = csv_result["fraud_probability"]
+                predicted = csv_result["predicted_label"]
+                actual = csv_result["actual_label"]
+                result_columns = st.columns(4)
+                result_columns[0].metric("Fraud risk score", f"{probability:.1%}")
+                result_columns[1].metric(
+                    "Model prediction", "Fraudulent" if predicted else "Genuine"
+                )
+                result_columns[2].metric(
+                    "Known CSV label", "Fraudulent" if actual else "Genuine"
+                )
+                result_columns[3].metric(
+                    "Held-out check", "Correct" if predicted == actual else "Mismatch"
+                )
+                st.caption(
+                    f"Model confidence: {max(probability, 1 - probability):.1%} · "
+                    f"Selected model: {selected_model} · CSV row "
+                    f"{csv_result['row_number']}"
+                )
+                with st.expander("View this held-out posting's original CSV fields"):
+                    st.dataframe(
+                        raw_data.iloc[[csv_result["row_number"] - 2]],
+                        width="stretch",
+                    )
+    else:
+        st.info("No held-out rows are available for this trained dataset.")
 
 with st.expander("How the detector works"):
     st.markdown(
