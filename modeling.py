@@ -17,7 +17,7 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
@@ -26,7 +26,7 @@ from sklearn.tree import DecisionTreeClassifier
 
 
 TEXT_COLS = ["title", "company_profile", "description", "requirements", "benefits"]
-MODEL_ASSET_VERSION = 3
+MODEL_ASSET_VERSION = 4
 CAT_COLS = [
     "location",
     "salary_range",
@@ -157,6 +157,7 @@ def train_best_model(raw_dataframe):
         raise ValueError("The CSV must include a 'fraudulent' target column.")
 
     data = raw_dataframe.copy()
+    data["_source_row_number"] = range(2, len(data) + 2)
     data["fraudulent"] = pd.to_numeric(data["fraudulent"], errors="coerce")
     data = data.dropna(subset=["fraudulent"]).copy()
     if not set(data["fraudulent"].unique()).issubset({0, 1}):
@@ -171,85 +172,95 @@ def train_best_model(raw_dataframe):
         raise ValueError("At least three examples of each class are required.")
 
     featured = add_features(data)
-    X = featured.drop(columns=["fraudulent"])
+    X = featured.drop(columns=["fraudulent", "_source_row_number"])
     y = featured["fraudulent"]
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, stratify=y, random_state=42
-    )
-
-    calibration_cv = min(3, int(y_train.value_counts().min()))
-    if calibration_cv < 2:
-        raise ValueError(
-            "The training split needs at least two examples of each class "
-            "to calibrate the SVM. Add more labeled rows and try again."
+    folds = min(5, int(y.value_counts().min()))
+    splitter = StratifiedKFold(n_splits=folds, shuffle=True, random_state=42)
+    split_indices = list(splitter.split(X, y))
+    estimators = _models(calibration_cv=2)
+    candidates = [
+        {
+            "name": name,
+            "feature_selection": feature_selection,
+            "label": (
+                f"{name} · "
+                f"{'with' if feature_selection else 'without'} "
+                "feature selection"
+            ),
+            "probabilities": [None] * len(y),
+            "predictions": [None] * len(y),
+            "folds": folds,
+        }
+        for feature_selection in (False, True)
+        for name in estimators
+    ]
+    candidate_lookup = {
+        (candidate["name"], candidate["feature_selection"]): candidate
+        for candidate in candidates
+    }
+    for train_indices, validation_indices in split_indices:
+        X_train = X.iloc[train_indices]
+        X_validation = X.iloc[validation_indices]
+        y_train = y.iloc[train_indices]
+        preprocessor = _make_preprocessor()
+        X_train_prepared = preprocessor.fit_transform(X_train, y_train)
+        X_validation_prepared = preprocessor.transform(X_validation)
+        train_views = {False: X_train_prepared}
+        validation_views = {False: X_validation_prepared}
+        selector = SelectKBest(
+            score_func=chi2, k=min(2000, X_train_prepared.shape[1])
         )
+        train_views[True] = selector.fit_transform(X_train_prepared, y_train)
+        validation_views[True] = selector.transform(X_validation_prepared)
 
-    estimators = _models(calibration_cv)
-    candidates = []
-    train_preprocessor = _make_preprocessor()
-    X_train_prepared = train_preprocessor.fit_transform(X_train, y_train)
-    X_test_prepared = train_preprocessor.transform(X_test)
-    for feature_selection in (False, True):
-        selector = None
-        X_train_model = X_train_prepared
-        X_test_model = X_test_prepared
-        if feature_selection:
-            selector = SelectKBest(
-                score_func=chi2, k=min(2000, X_train_prepared.shape[1])
-            )
-            X_train_model = selector.fit_transform(X_train_prepared, y_train)
-            X_test_model = selector.transform(X_test_prepared)
+        for feature_selection in (False, True):
+            for name, estimator in estimators.items():
+                fold_classifier = clone(estimator)
+                fold_classifier.fit(train_views[feature_selection], y_train)
+                fold_probabilities = fold_classifier.predict_proba(
+                    validation_views[feature_selection]
+                )[:, 1]
+                fold_predictions = fold_classifier.predict(
+                    validation_views[feature_selection]
+                )
+                candidate = candidate_lookup[(name, feature_selection)]
+                for position, probability, prediction in zip(
+                    validation_indices, fold_probabilities, fold_predictions
+                ):
+                    candidate["probabilities"][position] = float(probability)
+                    candidate["predictions"][position] = int(prediction)
 
-        for name, estimator in estimators.items():
-            classifier = clone(estimator)
-            classifier.fit(X_train_model, y_train)
-            probabilities = classifier.predict_proba(X_test_model)[:, 1]
-            predictions = classifier.predict(X_test_model)
-            matrix = confusion_matrix(y_test, predictions, labels=[0, 1])
-            tn, fp, fn, tp = matrix.ravel()
-            metrics = {
-                "Accuracy": accuracy_score(y_test, predictions),
-                "Balanced accuracy": balanced_accuracy_score(y_test, predictions),
-                "Precision": precision_score(
-                    y_test, predictions, zero_division=0
-                ),
-                "Recall": recall_score(y_test, predictions, zero_division=0),
-                "F1": f1_score(y_test, predictions, zero_division=0),
-                "ROC-AUC": roc_auc_score(y_test, probabilities),
-                "Specificity": tn / max(tn + fp, 1),
+    for candidate in candidates:
+        probabilities = candidate.pop("probabilities")
+        predictions = candidate.pop("predictions")
+        matrix = confusion_matrix(y, predictions, labels=[0, 1])
+        tn, fp, fn, tp = matrix.ravel()
+        candidate["metrics"] = {
+            "Accuracy": accuracy_score(y, predictions),
+            "Balanced accuracy": balanced_accuracy_score(y, predictions),
+            "Precision": precision_score(y, predictions, zero_division=0),
+            "Recall": recall_score(y, predictions, zero_division=0),
+            "F1": f1_score(y, predictions, zero_division=0),
+            "ROC-AUC": roc_auc_score(y, probabilities),
+            "Specificity": tn / max(tn + fp, 1),
+        }
+        candidate["validation_predictions"] = [
+            {
+                "row_number": int(source_row_number),
+                "actual_label": int(actual),
+                "predicted_label": int(predicted),
+                "fraud_probability": float(probability),
             }
-            candidates.append(
-                {
-                    "name": name,
-                    "feature_selection": feature_selection,
-                    "label": (
-                        f"{name} · "
-                        f"{'with' if feature_selection else 'without'} "
-                        "feature selection"
-                    ),
-                    "metrics": metrics,
-                    "validation_predictions": [
-                        {
-                            "row_number": int(index) + 2,
-                            "actual_label": int(actual),
-                            "predicted_label": int(predicted),
-                            "fraud_probability": float(probability),
-                        }
-                        for index, actual, predicted, probability in zip(
-                            y_test.index,
-                            y_test,
-                            predictions,
-                            probabilities,
-                        )
-                    ],
-                    "confusion_counts": {
-                        "True negative": int(tn),
-                        "False positive": int(fp),
-                        "False negative": int(fn),
-                        "True positive": int(tp),
-                    },
-                }
+            for source_row_number, actual, predicted, probability in zip(
+                data["_source_row_number"], y, predictions, probabilities
             )
+        ]
+        candidate["confusion_counts"] = {
+            "True negative": int(tn),
+            "False positive": int(fp),
+            "False negative": int(fn),
+            "True positive": int(tp),
+        }
 
     best = max(
         candidates,
@@ -303,5 +314,6 @@ def train_best_model(raw_dataframe):
         "selected_model": best["label"],
         "feature_selection": best["feature_selection"],
         "training_rows": len(data),
-        "validation_rows": len(y_test),
+        "validation_rows": len(y),
+        "validation_folds": folds,
     }

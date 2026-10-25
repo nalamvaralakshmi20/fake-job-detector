@@ -7,6 +7,7 @@ import html as _html
 from modeling import MODEL_ASSET_VERSION, add_features, train_best_model
 
 DEMO_DATA_PATH = Path(__file__).with_name("demo_jobs.csv")
+BINARY_FORM_FIELDS = {"telecommuting", "has_company_logo", "has_questions"}
 
 # Configure page style
 st.set_page_config(
@@ -292,7 +293,10 @@ with st.sidebar:
                 if demo_train_clicked
                 else pd.read_csv(training_file)
             )
-            with st.spinner("Training and comparing the notebook's 10 model configurations..."):
+            with             st.spinner(
+                "Comparing 10 model configurations with stratified "
+                "cross-validation, then fitting them on all labeled rows..."
+            ):
                 st.session_state.model_assets = train_best_model(training_data)
                 st.session_state.model_assets["training_source"] = (
                     "Synthetic demo" if demo_train_clicked else training_file.name
@@ -332,7 +336,7 @@ if assets is None:
 else:
     st.sidebar.success(
         f"{len(assets['models'])} models ready · "
-        f"best validation F1 {assets['metrics']['F1']:.3f}"
+        f"best cross-validation F1 {assets['metrics']['F1']:.3f}"
     )
 
 # Hero Section
@@ -358,7 +362,7 @@ if assets is not None:
         help="Each option is a separately trained model with its own validation scores.",
     )
     selected_metrics = assets["model_scores"][selected_model]
-    st.markdown("#### Selected model's validation scores")
+    st.markdown("#### Selected model's cross-validation scores")
     metric_columns = st.columns(5)
     for column, metric_name in zip(
         metric_columns,
@@ -368,9 +372,10 @@ if assets is not None:
     st.caption(
         f"Selected model: {selected_model} · "
         f"training rows: {assets['training_rows']:,} · "
-        f"validation rows: {assets['validation_rows']:,} · "
-        f"source: {assets['training_source']}. Scores are measured on "
-        "held-out rows and do not guarantee performance on new postings."
+        f"out-of-fold rows: {assets['validation_rows']:,} across "
+        f"{assets['validation_folds']} stratified folds · "
+        f"source: {assets['training_source']}. Every row is evaluated by a "
+        "fold model that did not train on that row."
     )
     score_rows = [
         {"Model configuration": name, **metrics}
@@ -382,9 +387,11 @@ if assets is not None:
         width="stretch",
     )
     st.caption(
-        "The selected model is trained on the uploaded data. Validation "
-        "scores are for comparing these configurations, not a guarantee of "
-        "future performance."
+        "These are out-of-fold scores for comparing model configurations, "
+        "not a guarantee of future performance. The top configuration is "
+        "chosen from these same folds, so use a separate untouched test set "
+        "for an unbiased final estimate. Synthetic demo results cannot "
+        "establish real-world accuracy."
     )
     with st.expander("More validation detail: balanced accuracy, specificity, confusion counts"):
         selected_confusion = assets["confusion_counts"][selected_model]
@@ -398,9 +405,10 @@ if assets is not None:
         )
     if assets["training_rows"] < 1000 or assets["validation_rows"] < 100:
         st.warning(
-            "This dataset is small, so validation scores can change a lot "
-            "with different postings. The demo is synthetic and is not a "
-            "real-world accuracy test; use a larger, representative labeled dataset."
+            "This dataset is small, so cross-validation scores can vary "
+            "substantially with different data. The demo is synthetic; even "
+            "100% across these folds is not evidence of real-world accuracy. "
+            "Use a large, representative, independently labeled dataset."
         )
 
 if st.session_state.training_data_raw is not None:
@@ -447,11 +455,11 @@ if st.session_state.training_data_raw is not None:
         )
 
 if assets is not None and st.session_state.training_data_raw is not None:
-    st.subheader("Score one held-out CSV posting")
+    st.subheader("Explore any CSV posting")
     st.caption(
-        "Choose a row the model did not train on. Its known label is shown "
-        "beside the selected model's prediction so you can inspect a real "
-        "held-out example without scoring a row the model memorized."
+        "A row is one job posting; its columns are the posting fields. "
+        "Choose any row below to view its out-of-fold model score and label, "
+        "or load its fields into the manual analysis form."
     )
     validation_rows = assets["validation_predictions"][selected_model]
     raw_data = st.session_state.training_data_raw
@@ -466,11 +474,15 @@ if assets is not None and st.session_state.training_data_raw is not None:
 
     if row_labels:
         selected_row_label = st.selectbox(
-            "Held-out posting",
+            "CSV posting",
             list(row_labels),
             key="validation_row_choice",
         )
-        score_row_clicked = st.button("Score selected CSV row")
+        action_columns = st.columns(2)
+        score_row_clicked = action_columns[0].button("Show out-of-fold score")
+        load_row_clicked = action_columns[1].button(
+            "Load fields into manual form"
+        )
         if score_row_clicked:
             selected_prediction = row_labels[selected_row_label]
             st.session_state.csv_analysis_result = {
@@ -478,6 +490,40 @@ if assets is not None and st.session_state.training_data_raw is not None:
                 "model": selected_model,
                 **selected_prediction,
             }
+        if load_row_clicked:
+            selected_prediction = row_labels[selected_row_label]
+            raw_row = raw_data.iloc[selected_prediction["row_number"] - 2]
+            clean_row = add_features(pd.DataFrame([raw_row])).iloc[0]
+            field_keys = {
+                "title": "job_title",
+                "location": "job_location",
+                "salary_range": "job_salary",
+                "industry": "job_industry",
+                "function": "job_function",
+                "employment_type": "job_employment_type",
+                "required_experience": "job_experience",
+                "required_education": "job_education",
+                "company_profile": "job_company_profile",
+                "description": "job_description",
+                "requirements": "job_requirements",
+                "benefits": "job_benefits",
+                "telecommuting": "job_remote",
+                "has_company_logo": "job_logo",
+                "has_questions": "job_questions",
+            }
+            for field, widget_key in field_keys.items():
+                value = clean_row[field]
+                st.session_state[widget_key] = (
+                    bool(value)
+                    if field in BINARY_FORM_FIELDS
+                    else str(value)
+                )
+            st.session_state.loaded_csv_row_number = selected_prediction[
+                "row_number"
+            ]
+            st.session_state.csv_analysis_result = None
+            st.session_state.analysis_result = None
+            st.rerun()
 
         csv_result = st.session_state.csv_analysis_result
         if csv_result is not None:
@@ -505,7 +551,8 @@ if assets is not None and st.session_state.training_data_raw is not None:
                     "Held-out check", "Correct" if predicted == actual else "Mismatch"
                 )
                 st.caption(
-                    f"Model confidence: {max(probability, 1 - probability):.1%} · "
+                    f"Model certainty (not calibrated): "
+                    f"{max(probability, 1 - probability):.1%} · "
                     f"Selected model: {selected_model} · CSV row "
                     f"{csv_result['row_number']}"
                 )
@@ -515,7 +562,7 @@ if assets is not None and st.session_state.training_data_raw is not None:
                         width="stretch",
                     )
     else:
-        st.info("No held-out rows are available for this trained dataset.")
+        st.info("No valid labeled CSV rows are available for out-of-fold scoring.")
 
 with st.expander("How the detector works"):
     st.markdown(
@@ -537,49 +584,100 @@ col1, col2 = st.columns([5, 4])
 
 with col1:
     st.markdown("### 📝 Job details")
-    title = st.text_input("Job title", placeholder="e.g. Python Developer Intern")
-    location = st.text_input("Location", placeholder="e.g. IN, Hyderabad")
+    form_widget_defaults = {
+        "job_title": "",
+        "job_location": "",
+        "job_salary": "",
+        "job_industry": "",
+        "job_function": "",
+        "job_employment_type": "",
+        "job_experience": "",
+        "job_education": "",
+        "job_company_profile": "",
+        "job_description": "",
+        "job_requirements": "",
+        "job_benefits": "",
+        "job_remote": False,
+        "job_logo": False,
+        "job_questions": False,
+    }
+    for key, default in form_widget_defaults.items():
+        st.session_state.setdefault(key, default)
+    if st.session_state.get("loaded_csv_row_number") is not None:
+        st.info(
+            f"Loaded fields from CSV row "
+            f"{st.session_state.loaded_csv_row_number}. Review or edit them "
+            "before analysis."
+        )
+
+    title = st.text_input(
+        "Job title", placeholder="e.g. Python Developer Intern", key="job_title"
+    )
+    location = st.text_input(
+        "Location", placeholder="e.g. IN, Hyderabad", key="job_location"
+    )
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        salary = st.text_input("Salary / stipend", placeholder="e.g. 10000-15000")
+        salary = st.text_input(
+            "Salary / stipend", placeholder="e.g. 10000-15000", key="job_salary"
+        )
     with c2:
-        industry = st.text_input("Industry", placeholder="Information Technology")
+        industry = st.text_input(
+            "Industry", placeholder="Information Technology", key="job_industry"
+        )
     with c3:
-        function = st.text_input("Function", placeholder="Engineering")
+        function = st.text_input(
+            "Function", placeholder="Engineering", key="job_function"
+        )
 
     c4, c5, c6 = st.columns(3)
     with c4:
-        employment_type = st.selectbox("Employment type", ["", "Full-time", "Part-time", "Contract", "Temporary", "Other"])
+        employment_type = st.text_input(
+            "Employment type", key="job_employment_type"
+        )
     with c5:
-        experience = st.selectbox("Experience level", ["", "Internship", "Entry level", "Associate", "Mid-Senior level", "Director", "Executive", "Not Applicable"])
+        experience = st.text_input("Experience level", key="job_experience")
     with c6:
-        education = st.selectbox("Education", ["", "Bachelor's Degree", "Master's Degree", "High School or equivalent", "Certification", "Unspecified"])
+        education = st.text_input("Education", key="job_education")
 
-    profile = st.text_area("Company profile", placeholder="About the company...", height=100)
-    description = st.text_area("Job description", placeholder="Paste the job posting here...", height=150)
+    profile = st.text_area(
+        "Company profile",
+        placeholder="About the company...",
+        height=100,
+        key="job_company_profile",
+    )
+    description = st.text_area(
+        "Job description",
+        placeholder="Paste the job posting here...",
+        height=150,
+        key="job_description",
+    )
 
     c7, c8 = st.columns(2)
     with c7:
-        requirements = st.text_area("Requirements")
+        requirements = st.text_area("Requirements", key="job_requirements")
     with c8:
-        benefits = st.text_area("Benefits")
+        benefits = st.text_area("Benefits", key="job_benefits")
 
     c9, c10, c11 = st.columns(3)
     with c9:
         remote = st.checkbox(
             "Remote job",
             help="Select this if the posting says the work can be done remotely.",
+            key="job_remote",
         )
     with c10:
         logo = st.checkbox(
             "Company logo present",
             help="Select this only if the employer's logo appears on the posting.",
+            key="job_logo",
         )
     with c11:
         questions = st.checkbox(
             "Screening questions",
             help="Select this if the application includes questions to screen applicants.",
+            key="job_questions",
         )
 
     form = {
@@ -706,6 +804,11 @@ with col2:
               <p class="fj-tip">Analyzed with {_html.escape(result['model'])}</p>
             </div>
           </div>
+          <p class="fj-tip">
+            This manual score comes from the final model fitted on all labeled
+            CSV rows. If you loaded a CSV row, use its out-of-fold score above
+            for an independent check; the final model has seen the training rows.
+          </p>
           <h3>Possible warning signs</h3>
           <p class="fj-tip">The model score is not a guaranteed real-world probability. These text checks are separate from it; missing information is not proof of fraud.</p>
           <p class="fj-signal-summary">Independent checks: {_html.escape(signal_summary)}</p>
