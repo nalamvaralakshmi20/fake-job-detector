@@ -4,10 +4,18 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 import html as _html
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from modeling import (
     MODEL_ASSET_VERSION,
     add_features,
-    calculate_metrics,
     train_best_model,
 )
 
@@ -25,6 +33,62 @@ REQUIRED_MODEL_ASSET_FIELDS = {
     "validation_rows",
     "validation_folds",
 }
+def calculate_metrics(y_true, predictions, probabilities):
+    has_both_classes = len(set(y_true)) == 2
+    matrix = confusion_matrix(y_true, predictions, labels=[0, 1])
+    tn, fp, fn, tp = matrix.ravel()
+    metrics = {
+        "Accuracy": accuracy_score(y_true, predictions),
+        "Balanced accuracy": (
+            balanced_accuracy_score(y_true, predictions)
+            if has_both_classes
+            else None
+        ),
+        "Precision": precision_score(y_true, predictions, zero_division=0),
+        "Recall": recall_score(y_true, predictions, zero_division=0),
+        "F1": f1_score(y_true, predictions, zero_division=0),
+        "ROC-AUC": (
+            roc_auc_score(y_true, probabilities)
+            if has_both_classes
+            else None
+        ),
+        "Specificity": tn / (tn + fp) if tn + fp else None,
+    }
+    confusion_counts = {
+        "True negative": int(tn),
+        "False positive": int(fp),
+        "False negative": int(fn),
+        "True positive": int(tp),
+    }
+    return metrics, confusion_counts
+
+
+def model_assets_are_compatible(assets):
+    if not isinstance(assets, dict):
+        return False
+    if not REQUIRED_MODEL_ASSET_FIELDS.issubset(assets):
+        return False
+    if assets.get("asset_version") != MODEL_ASSET_VERSION:
+        return False
+    models = assets["models"]
+    scores = assets["model_scores"]
+    predictions = assets["validation_predictions"]
+    confusion = assets["confusion_counts"]
+    if not all(
+        isinstance(value, dict)
+        for value in (models, scores, predictions, confusion)
+    ):
+        return False
+    if not models or not set(models).issubset(scores):
+        return False
+    if not set(models).issubset(predictions) or not set(models).issubset(confusion):
+        return False
+    if assets["selected_model"] not in models:
+        return False
+    return all(
+        isinstance(assets.get(field), int) and assets[field] > 0
+        for field in ("training_rows", "validation_rows", "validation_folds")
+    )
 
 # Configure page style
 st.set_page_config(
@@ -274,11 +338,7 @@ if "selected_csv_rows" not in st.session_state:
     st.session_state.selected_csv_rows = []
 
 assets = st.session_state.model_assets
-if assets is not None and (
-    not isinstance(assets, dict)
-    or not REQUIRED_MODEL_ASSET_FIELDS.issubset(assets)
-    or assets.get("asset_version") != MODEL_ASSET_VERSION
-):
+if assets is not None and not model_assets_are_compatible(assets):
     st.session_state.model_assets = None
     st.session_state.analysis_result = None
     st.session_state.csv_analysis_result = None
@@ -396,7 +456,7 @@ if assets is not None:
         f"Selected model: {selected_model} · "
         f"training rows: {assets['training_rows']:,} · "
         f"out-of-fold rows: {assets['validation_rows']:,} across "
-        f"{assets['validation_folds']} stratified folds · "
+        f"{assets.get('validation_folds', 'unknown')} stratified folds · "
         f"source: {assets['training_source']}. Every row is evaluated by a "
         "fold model that did not train on that row."
     )
@@ -513,9 +573,25 @@ if assets is not None and st.session_state.training_data_raw is not None:
             "Analyze selected CSV rows",
             disabled=not selected_row_labels,
         )
+        if selected_row_labels:
+            row_to_load = (
+                selected_row_labels[0]
+                if len(selected_row_labels) == 1
+                else st.selectbox(
+                    "Choose which selected posting to load into the manual form",
+                    selected_row_labels,
+                    key="csv_row_to_load",
+                )
+            )
+        else:
+            row_to_load = None
         load_row_clicked = action_columns[1].button(
-            "Load one selected row into manual form",
-            disabled=len(selected_row_labels) != 1,
+            "Load selected posting into manual form",
+            disabled=row_to_load is None,
+            help=(
+                "A single manual form represents one job. For multiple "
+                "selected postings, choose which one to load here."
+            ),
         )
         if evaluate_rows_clicked:
             selected_predictions = [
@@ -536,8 +612,8 @@ if assets is not None and st.session_state.training_data_raw is not None:
                 "metrics": row_metrics,
                 "confusion_counts": row_confusion,
             }
-        if load_row_clicked and len(selected_row_labels) == 1:
-            selected_prediction = row_labels[selected_row_labels[0]]
+        if load_row_clicked and row_to_load is not None:
+            selected_prediction = row_labels[row_to_load]
             raw_row = raw_data.iloc[selected_prediction["row_number"] - 2]
             clean_row = add_features(pd.DataFrame([raw_row])).iloc[0]
             field_keys = {
